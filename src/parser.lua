@@ -2,11 +2,95 @@ local table = require 'ext.table'
 local class = require 'ext.class'
 local string = require 'ext.string'
 
-local ast = require 'parser.ast'
+local ast = require 'ast'
 
 local DataReader = class()
 function DataReader:init(data)
-	self.data = data
+	local emoji
+
+	local p8scii_map_emoji = {
+		[11015] = '\131', -- ⬇️
+		[11013] = '\139', -- ⬅️
+		[127358] = '\142', -- 🅾️
+		[10145] = '\145', -- ➡️
+		[11014] = '\148', -- ⬆️
+	}
+
+	local p8scii_map = {
+		[185] = '\1', -- ¹
+		[178] = '\2', -- ²
+		[179] = '\3', -- ³
+		[8308] = '\4', -- ⁴
+		[8309] = '\5', -- ⁵
+		[8310] = '\6', -- ⁶
+		[8311] = '\7', -- ⁷
+		[8312] = '\8', -- ⁸
+		[7495] = '\11', -- ᵇ
+		[7580] = '\12', -- ᶜ
+		[7497] = '\14', -- ᵉ
+		[7584] = '\15', -- ᶠ
+		[9646] = '\16', -- ▮
+		[9632] = '\17', -- ■
+		[9633] = '\18', -- □
+		[8281] = '\19', -- ⁙
+		[8280] = '\20', -- ⁘
+		[8214] = '\21', -- ‖
+		[9664] = '\22', -- ◀
+		[9654] = '\23', -- ▶
+		[12300] = '\24', -- 「
+		[12301] = '\25', -- 」
+		[165] = '\26', -- ¥
+		[8226] = '\27', -- •
+		[12289] = '\28', -- 、
+		[12290] = '\29', -- 。
+		[12443] = '\30', -- ゛
+		[12444] = '\31', -- ゜
+		[9675] = '\127', -- ○
+		[9608] = '\128', -- █
+		[9618] = '\129', -- ▒
+		[128049] = '\130', -- 🐱
+		[9617] = '\132', -- ░
+		[10045] = '\133', -- ✽
+		[9678] = '\134', -- ●
+		[9829] = '\135', -- ♥
+		[9737] = '\136', -- ☉
+		[50883] = '\137', -- 웃
+		[8962] = '\138', -- ⌂
+		[128528] = '\140', -- 😐
+		[9834] = '\141', -- ♪
+		[9670] = '\143', -- ◆
+		[8230] = '\144', -- …
+		[9733] = '\146', -- ★
+		[10711] = '\147', -- ⧗
+		[711] = '\149', -- ˇ
+		[8743] = '\150', -- ∧
+		[10062] = '\151', -- ❎
+		[9636] = '\152', -- ▤
+		[9637] = '\153' -- ▥
+	}
+
+	local data_p8scii = ''
+
+	-- Convert text format from Unicode to equivalent P8SCII data
+	for _, c in utf8.codes(data) do
+		if p8scii_map_emoji[c] then
+			emoji = c
+		elseif emoji and c == 65039 then
+			data_p8scii = data_p8scii..p8scii_map_emoji[emoji]
+
+			emoji = nil
+		else
+			if emoji then
+				data_p8scii = data_p8scii..utf8.char(emoji)
+
+				emoji = nil
+			end
+
+			data_p8scii = data_p8scii..(p8scii_map[c] or utf8.char(c))
+		end
+	end
+
+	self.data = data_p8scii
 	self.index = 1
 	-- skip past initial #'s
 	if self.data:sub(1,1) == '#' then self.index = self.data:find('\n')+1 end
@@ -16,7 +100,7 @@ function DataReader:done()
 end
 function DataReader:seekto(pattern)
 	local from, to = self.data:find(pattern, self.index)
-	if not from then 
+	if not from then
 		from = #self.data+1
 		to = from
 	end
@@ -42,8 +126,8 @@ function DataReader:readblock()
 	if not self:canbe('%[=*%[') then return end
 	local eq = assert(self.lasttoken:match('^%[(=*)%[$'))
 	local start = self.index
-	if not self:seekpast('%]'..eq..'%]') then 
-		error("expected closing block") 
+	if not self:seekpast('%]'..eq..'%]') then
+		error("expected closing block")
 	end
 	self.lasttoken = self.data:sub(start, self.index - #self.lasttoken - 1)
 	return self.lasttoken
@@ -53,7 +137,7 @@ local Tokenizer = class()
 
 -- symbols from largest to smallest
 Tokenizer.symbols = table()
-for w in ([[... .. == ~= <= >= + - * / % ^ # < > = ( ) { } [ ] ; : , .]]):gmatch('%S+') do
+for w in ([[... >>> <<> >>< .. == ~= != <= >= << >> += -= *= /= \= %= & ~ | + - * / \ % ^ # @ $ < > = ( ) { } [ ] ; : , .]]):gmatch('%S+') do
 	Tokenizer.symbols:insert(w)
 end
 
@@ -77,7 +161,7 @@ function Tokenizer:init(data)
 			if r:canbe'%-%-' then
 local start = r.index - #r.lasttoken
 				-- read block comment if it exists
-				if not r:readblock() then 
+				if not r:readblock() then
 					-- read line otherwise
 					r:seekto'\n'
 				end
@@ -87,7 +171,7 @@ local start = r.index - #r.lasttoken
 				--coroutine.yield(commentstr, 'comment')
 
 --print('read comment ['..start..','..(r.index-1)..']:'..commentstr)
-			
+
 			-- block string
 			elseif r:readblock() then
 --print('read multi-line string ['..(r.index-#r.lasttoken)..','..r.index..']: '..r.lasttoken)
@@ -136,7 +220,7 @@ local start = r.index
 				-- TODO if version is 5.2 then allow decimals in hex #'s, and use 'p's instead of 'e's for exponents
 				else
 					local token = r:canbe'[%.%d]+'
-					assert(#token:gsub('[^%.]','') < 2, 'malformed number') 
+					assert(#token:gsub('[^%.]','') < 2, 'malformed number')
 					local n = table{token}
 					if r:canbe'e' then
 						n:insert(r.lasttoken)
@@ -196,12 +280,11 @@ end
 local Parser = class()
 
 -- static function
-function Parser.parse(data, version)
-	return Parser(data, version).tree
+function Parser.parse(data)
+	return Parser(data).tree
 end
 
-function Parser:init(data, version)
-	self.version = version or _VERSION:match'^Lua (.*)$'
+function Parser:init(data)
 	if data then
 		self:setData(data)
 	end
@@ -253,10 +336,7 @@ function Parser:chunk()
 	until false
 	local laststat = self:laststat()
 	if laststat then stmts:insert(laststat) end
--- in 5.2/5.3 should all statements have optional ;'s?
-if self.version == '5.2' or self.version == '5.3' then
 	self:canbe(';', 'symbol')
-end
 	return ast._block(table.unpack(stmts))
 end
 function Parser:block(blockName)
@@ -334,7 +414,6 @@ function Parser:stat()
 		return ast._do(table.unpack(block))
 	end
 
-if self.version == '5.2' or self.version == '5.3' then
 	if self:canbe('break', 'keyword') then
 		if not ({['while']=1, ['repeat']=1, ['for =']=1, ['for in']=1})[self.blockStack:last()] then
 			error("break not inside loop")
@@ -342,19 +421,18 @@ if self.version == '5.2' or self.version == '5.3' then
 		self:canbe(';', 'symbol')
 		return ast._break()
 	end
-end
 
 	-- now we handle functioncall and varlist = explist rules
-	
+
 	--[[
 	stat ::= varlist `=` explist | functioncall
 	varlist ::= var {`,` var}
 	var ::= Name | prefixexp `[` exp `]` | prefixexp `.` Name
 	prefixexp ::= var | functioncall | `(` exp `)`
-	functioncall ::= prefixexp args | prefixexp `:` Name args	
+	functioncall ::= prefixexp args | prefixexp `:` Name args
 		right now prefixexp is designed to process trailing args ...
 		... so just use it and complain if the wrapping ast is not a _call
-	likewise with var, complain if it is a call 
+	likewise with var, complain if it is a call
 	--]]
 	local prefixexp = self:prefixexp()
 	if prefixexp then
@@ -367,8 +445,36 @@ end
 				assert(var.type ~= 'call', "syntax error")
 				vars:insert(var)
 			end
+			if #vars == 1 then
+				for _, op in ipairs{
+					{'+','add'},
+					{'-','sub'},
+					{'*','mul'},
+					{'/','div'},
+					{'\\','idiv'},
+					{'%','mod'},
+					{'^','pow'},
+					{'..','concat'},
+					{'<<','shl'},
+					{'>>','shr'},
+					{'>>>','lshr'},
+					{'<<>','rotl'},
+					{'>><','rotr'},
+					{'&','band'},
+					{'|','bor'},
+					{'~','bxor'}
+				} do
+					if self:canbe(op[1]..'=', 'symbol') then
+						local explist = assert(self:explist())
+
+						assert(#explist == 1)
+
+						return ast['_'..op[2]..'_assign'](vars[1], explist[1])
+					end
+				end
+			end
 			self:mustbe('=', 'symbol')
-			return ast._assign(vars, assert(self:explist()))	
+			return ast._assign(vars, assert(self:explist()))
 		end
 	end
 end
@@ -420,7 +526,7 @@ end
 exp ::= nil | false | true | Number | String | `...` | function | prefixexp | tableconstructor | exp binop exp | unop exp
 ... splitting this into two ...
 exp ::= [unop] subexp {binop [unop] subexp}
-subexp ::= nil | false | true | Number | String | `...` | function | prefixexp | tableconstructor 
+subexp ::= nil | false | true | Number | String | `...` | function | prefixexp | tableconstructor
 --]]
 function Parser:exp()
 	return self:exp_or()
@@ -442,13 +548,14 @@ function Parser:exp_and()
 	return a
 end
 function Parser:exp_cmp()
-	local a = self:exp_concat()
+	local a = self:exp_binary()
 	if not a then return end
 	if self:canbe('<', 'symbol')
 	or self:canbe('>', 'symbol')
 	or self:canbe('<=', 'symbol')
 	or self:canbe('>=', 'symbol')
 	or self:canbe('~=', 'symbol')
+	or self:canbe('!=', 'symbol')
 	or self:canbe('==', 'symbol')
 	then
 		local classForSymbol = {
@@ -457,9 +564,36 @@ function Parser:exp_cmp()
 			['<='] = ast._le,
 			['>='] = ast._ge,
 			['~='] = ast._ne,
+			['!='] = ast._ne,
 			['=='] = ast._eq,
 		}
 		a = assert(classForSymbol[self.lasttoken])(a, assert(self:exp_cmp()))
+	end
+	return a
+end
+function Parser:exp_binary()
+	local a = self:exp_concat()
+	if not a then return end
+	if self:canbe('<<', 'symbol')
+	or self:canbe('>>', 'symbol')
+	or self:canbe('>>>', 'symbol')
+	or self:canbe('<<>', 'symbol')
+	or self:canbe('>><', 'symbol')
+	or self:canbe('&', 'symbol')
+	or self:canbe('|', 'symbol')
+	or self:canbe('~', 'symbol')
+	then
+		local classForSymbol = {
+			['<<'] = ast._shl,
+			['>>'] = ast._shr,
+			['>>>'] = ast._lshr,
+			['<<>'] = ast._rotl,
+			['>><'] = ast._rotr,
+			['&'] = ast._band,
+			['|'] = ast._bor,
+			['~'] = ast._bxor,
+		}
+		a = assert(classForSymbol[self.lasttoken])(a, assert(self:exp_binary()))
 	end
 	return a
 end
@@ -472,7 +606,7 @@ function Parser:exp_concat()
 	return a
 end
 function Parser:exp_addsub()
-	local a = self:exp_muldivmod()
+	local a = self:exp_muldividivmod()
 	if not a then return end
 	if self:canbe('+', 'symbol')
 	or self:canbe('-', 'symbol')
@@ -487,26 +621,32 @@ function Parser:exp_addsub()
 	end
 	return a
 end
-function Parser:exp_muldivmod()
+function Parser:exp_muldividivmod()
 	local a = self:exp_unary()
 	if not a then return end
 	if self:canbe('*', 'symbol')
 	or self:canbe('/', 'symbol')
+	or self:canbe('\\', 'symbol')
 	or self:canbe('%', 'symbol')
 	then
 		local classForSymbol = {
 			['*'] = ast._mul,
 			['/'] = ast._div,
+			['\\'] = ast._idiv,
 			['%'] = ast._mod,
 		}
-		a = assert(classForSymbol[self.lasttoken])(a, assert(self:exp_muldivmod()))
+		a = assert(classForSymbol[self.lasttoken])(a, assert(self:exp_muldividivmod()))
 	end
 	return a
 end
 function Parser:exp_unary()
 	if self:canbe('not', 'keyword') then return ast._not(assert(self:exp_unary())) end
 	if self:canbe('#', 'symbol') then return ast._len(assert(self:exp_unary())) end
+	if self:canbe('~', 'symbol') then return ast._bnot(assert(self:exp_unary())) end
 	if self:canbe('-', 'symbol') then return ast._unm(assert(self:exp_unary())) end
+	if self:canbe('@', 'symbol') then return ast._peek(assert(self:exp_unary())) end
+	if self:canbe('%', 'symbol') then return ast._peek2(assert(self:exp_unary())) end
+	if self:canbe('$', 'symbol') then return ast._peek4(assert(self:exp_unary())) end
 	return self:exp_pow()
 end
 function Parser:exp_pow()
@@ -520,16 +660,16 @@ end
 function Parser:subexp()
 	local tableconstructor = self:tableconstructor()
 	if tableconstructor then return tableconstructor end
-	
+
 	local prefixexp = self:prefixexp()
 	if prefixexp then return prefixexp end
-	
+
 	local function_ = self:function_()
 	if function_ then return function_ end
 
-	if self:canbe('...', 'symbol') then 
+	if self:canbe('...', 'symbol') then
 		assert(self.functionStack:last() == 'function-vararg')
-		return ast._vararg() 
+		return ast._vararg()
 	end
 	if self:canbe(nil, 'string') then return ast._string(self.lasttoken) end
 	if self:canbe(nil, 'number') then return ast._number(self.lasttoken) end
@@ -551,7 +691,7 @@ prefixexp ::= (Name {'[' exp ']' | `.` Name | [`:` Name] args} | `(` exp `)`) {a
 --]]
 function Parser:prefixexp()
 	local prefixexp
-	
+
 	if self:canbe('(', 'symbol') then
 		local exp = assert(self:exp())
 		self:mustbe(')', 'symbol')
@@ -576,7 +716,7 @@ function Parser:prefixexp()
 		else
 			local args = self:args()
 			if not args then break end
-			
+
 			prefixexp = ast._call(prefixexp, table.unpack(args))
 		end
 	end
@@ -589,10 +729,10 @@ end
 -- returns a table of the args -- particularly an empty table if no args were found
 function Parser:args()
 	if self:canbe(nil, 'string') then return {ast._string(self.lasttoken)} end
-	
+
 	local tableconstructor = self:tableconstructor()
 	if tableconstructor then return {tableconstructor} end
-	
+
 	if self:canbe('(', 'symbol') then
 		local explist = self:explist()
 		self:mustbe(')', 'symbol')
@@ -648,7 +788,7 @@ function Parser:fieldlist()
 	self:fieldsep()
 	return fields
 end
-function Parser:field()	
+function Parser:field()
 	if self:canbe('[', 'symbol') then
 		local keyexp = assert(self:exp())
 		self:mustbe(']', 'symbol')

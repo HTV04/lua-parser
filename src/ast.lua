@@ -9,6 +9,46 @@ local node = class()
 
 node.tostringmethods = {}	-- each class gets a unique one
 
+
+local header = assert(io.open('header.lua', 'rb')):read('*a')
+
+local exprs = {
+	to_number = function(n)
+		--return 'number('..n..')' -- For debugging
+		return '(((((((('..n..') + 0x8000) % 0x10000) - 0x8000) * (1 << 48)) + 0.5) // 1) & (((1 << 32) - 1) << 32))'
+	end,
+
+	trim = " & (((1 << 32) - 1) << 32)"
+}
+
+local wraps = {
+	from_number = function(n)
+		n = (ast._string:isa(n) and ast._number(tonumber(n.value))) or n
+
+		return '('..tostring(n)..' / (1 << 48))'
+	end,
+	to_number = function(n)
+		n = (ast._string:isa(n) and ast._number(tonumber(n.value))) or n
+
+		if ast._number:isa(n) then
+			return tostring(n)
+		end
+
+		return '__p8tron_string_op('..tostring(n)..')'
+	end,
+
+	concat = function(n)
+		n = (ast._number:isa(n) and ast._string(tostring(n.value))) or n
+
+		if ast._var:isa(n) then
+			return '__p8tron_number_op('..tostring(n)..')'
+		end
+
+		return tostring(n)
+	end
+}
+
+
 -- returns ancestors as a table, including self
 function node:ancestors()
 	local n = self
@@ -52,7 +92,7 @@ ast.exec = node.exec
 I need to fix this up better to handle short-circuiting, replacing, removing, etc...
 parentFirstCallback is the parent-first traversal method
 childFirstCallback is the child-first traversal
-return what value of the callbacks you want 
+return what value of the callbacks you want
 returning a new node at the parent callback will not traverse its subsequent new children added to the tree
 --]]
 function traverseRecurse(
@@ -219,12 +259,12 @@ function node.flatten(f, varmap)
 end
 ast.flatten = node.flatten
 
-local function spacesep(stmts)
-	return table.mapi(stmts, tostring):concat' '
+local function commasep(stmts)
+	return table.mapi(stmts, tostring):concat','
 end
 
-local function commasep(exprs)
-	return table.mapi(exprs, tostring):concat','
+local function linesep(stmts)
+	return table.mapi(stmts, tostring):concat'\n'
 end
 
 
@@ -252,7 +292,7 @@ local function nodeclass(contents, parent)
 	for k,v in pairs(contents) do
 		newclass[k] = v
 	end
-	
+
 	-- TODO put in root-most ast class
 	newclass.__tostring = defaultToString
 
@@ -271,7 +311,7 @@ function ast._block:init(...)
 	end
 end
 function ast._block.tostringmethods:lua()
-	return spacesep(self)
+	return header..linesep(self)
 end
 
 --statements
@@ -288,6 +328,21 @@ function ast._assign.tostringmethods:lua()
 	return commasep(self.vars)..'='..commasep(self.exprs)
 end
 
+for _,info in ipairs{
+	'add','sub','mul','div','idiv','mod','pow','concat','shl','shr','lshr','rotl','rotr','band','bor','bxor'
+} do
+	local name = info..'_assign'
+	local cl = nodeclass{type=name}
+	ast['_'..name] = cl
+	function cl:init(var, expr)
+		self.var = var
+		self.expr = expr
+	end
+	function cl.tostringmethods:lua()
+		return self.var..'='..tostring(ast['_'..info](self.var, self.expr))
+	end
+end
+
 -- should we impose construction constraints _do(_block(...))
 -- or should we infer?  _do(...) = {type='do', block={type='block, ...}}
 -- or should we do neither?  _do(...) = {type='do', ...}
@@ -299,7 +354,7 @@ function ast._do:init(...)
 	end
 end
 function ast._do.tostringmethods:lua()
-	return 'do '..spacesep(self)..' end'
+	return 'do\n'..linesep(self)..'\nend'
 end
 
 ast._while = nodeclass({type='while'}, _stmt)
@@ -310,7 +365,7 @@ function ast._while:init(cond, ...)
 	end
 end
 function ast._while.tostringmethods:lua()
-	return 'while '..tostring(self.cond)..' do '..spacesep(self)..' end'
+	return 'while '..tostring(self.cond)..' do\n'..linesep(self)..'\nend'
 end
 
 ast._repeat = nodeclass({type='repeat'}, _stmt)
@@ -321,7 +376,7 @@ function ast._repeat:init(cond, ...)
 	end
 end
 function ast._repeat.tostringmethods:lua()
-	return 'repeat '..spacesep(self)..' until '..tostring(self.cond)
+	return 'repeat\n'..linesep(self)..'\nuntil '..tostring(self.cond)
 end
 
 --[[
@@ -354,12 +409,12 @@ function ast._if:init(cond,...)
 	self.elsestmt = elsestmt
 end
 function ast._if.tostringmethods:lua()
-	local s = 'if '..tostring(self.cond)..' then '..spacesep(self)
+	local s = 'if '..tostring(self.cond)..' then\n'..linesep(self)
 	for _,ei in ipairs(self.elseifs) do
 		s = s .. tostring(ei)
 	end
 	if self.elsestmt then s = s .. tostring(self.elsestmt) end
-	s = s .. ' end'
+	s = s .. '\nend'
 	return s
 end
 
@@ -372,7 +427,7 @@ function ast._elseif:init(cond,...)
 	end
 end
 function ast._elseif.tostringmethods:lua()
-	return ' elseif '..tostring(self.cond)..' then '..spacesep(self)
+	return '\nelseif '..tostring(self.cond)..' then\n'..linesep(self)
 end
 
 -- aux for _if
@@ -383,7 +438,7 @@ function ast._else:init(...)
 	end
 end
 function ast._else.tostringmethods:lua()
-	return ' else '..spacesep(self)
+	return '\nelse\n'..linesep(self)
 end
 
 ast._foreq = nodeclass({type='foreq'}, _stmt)
@@ -398,9 +453,13 @@ function ast._foreq:init(var,min,max,step,...)
 	end
 end
 function ast._foreq.tostringmethods:lua()
-	local s = 'for '..tostring(self.var)..' = '..tostring(self.min)..','..tostring(self.max)
-	if self.step then s = s..','..tostring(self.step) end
-	s = s .. ' do '..spacesep(self)..' end'
+	local s = 'for '..tostring(self.var)..' = '..wraps.to_number(self.min)..','..wraps.to_number(self.max)
+	if self.step then
+		s = s..','..wraps.to_number(self.step)
+	else
+		s = s..',1 << 48'
+	end
+	s = s .. ' do\n'..linesep(self)..'\nend'
 	return s
 end
 
@@ -413,7 +472,7 @@ function ast._forin:init(vars,iterexprs,...)
 	end
 end
 function ast._forin.tostringmethods:lua()
-	return 'for '..commasep(self.vars)..' in '..commasep(self.iterexprs)..' do '..spacesep(self)..' end'
+	return 'for '..commasep(self.vars)..' in '..commasep(self.iterexprs)..' do\n'..linesep(self)..'\nend'
 end
 
 ast._function = nodeclass({type='function'}, _stmt)
@@ -435,7 +494,7 @@ function ast._function.tostringmethods:lua()
 	if self.name then s = s .. tostring(self.name) end
 	s = s .. '('
 		.. commasep(table.mapi(self.args, tostring))
-		.. ') ' .. spacesep(self) .. ' end'
+		.. ')\n' .. linesep(self) .. '\nend'
 	return s
 end
 
@@ -521,7 +580,7 @@ ast._false = nodeclass{
 
 ast._number = nodeclass{type='number'}
 function ast._number:init(value) self.value = value end
-function ast._number.tostringmethods:lua() return self.value end
+function ast._number.tostringmethods:lua() return ((((((((self.value) + 0x8000) % 0x10000) - 0x8000) * (1 << 48)) + 0.5) // 1) & (((1 << 32) - 1) << 32)) end -- Convert to p8tron number
 
 ast._string = nodeclass{type='string'}
 function ast._string:init(value) self.value = value end
@@ -541,19 +600,23 @@ ast._vararg = nodeclass{type='vararg'}
 function ast._vararg.tostringmethods:lua() return '...' end
 
 ast._table = nodeclass{type='table'}	-- single-element assigns
-function ast._table:init(args) 
+function ast._table:init(args)
 	self.args = table(assert(args))
 end
 function ast._table.tostringmethods:lua()
+	local i = 0
+
 	return '{'..self.args:mapi(function(arg)
 		-- if it's an assign then wrap the vars[1] with []'s
 		if ast._assign:isa(arg) then
 			assert(#arg.vars == 1)
 			assert(#arg.exprs == 1)
-			return '[' .. tostring(arg.vars[1]) .. '] = '..tostring(arg.exprs[1])
+			return '['..tostring(arg.vars[1]) .. '] = '..tostring(arg.exprs[1])
 		end
-		return tostring(arg)
-	end):concat(',')..'}' 
+
+		i = i + (1 << 48)
+		return '['..i..'] = '..tostring(arg)
+	end):concat(',')..'}'
 end
 
 ast._var = nodeclass{type='var'}	-- variable, lhs of ast._assign's, similar to _arg
@@ -579,7 +642,7 @@ end
 ast._index = nodeclass{type='index'}
 function ast._index:init(expr,key)
 	self.expr = expr
-	-- helper add wrappers to some types: 
+	-- helper add wrappers to some types:
 	if type(key) == 'string' then
 		key = ast._string(key)
 	elseif type(key) == 'number' then
@@ -590,7 +653,7 @@ end
 function ast._index.tostringmethods:lua()
 -- TODO - if self.key is a string and has no funny chars the use a .$key instead of [$key]
 	if ast._string:isa(self.key)
-	and isLuaName(self.key.value) 
+	and isLuaName(self.key.value)
 	then
 		return tostring(self.expr)..'.'..self.key.value
 	end
@@ -613,21 +676,52 @@ end
 ast._op = class(node)
 
 for _,info in ipairs{
-	{'add','+'},
-	{'sub','-'},
-	{'mul','*'},
-	{'div','/'},
-	{'pow','^'},
-	{'mod','%'},
-	{'concat','..'},
-	{'lt','<'},
-	{'le','<='},
-	{'gt','>'},
-	{'ge','>='},
-	{'eq','=='},
-	{'ne','~='},
-	{'and','and'},
-	{'or','or'},
+	{'add','+',function(self)
+		return wraps.to_number(self.args[1])..' + '..wraps.to_number(self.args[2])
+	end},
+	{'sub','-',function(self)
+		return wraps.to_number(self.args[1])..' - '..wraps.to_number(self.args[2])
+	end},
+	{'mul','*',function(self)
+		return '('..wraps.to_number(self.args[1])..' >> 32) * ('..wraps.to_number(self.args[2])..' >> 32)'
+	end},
+	{'div','/',function(self)
+		return "("..wraps.to_number(self.args[1])..' // ('..wraps.to_number(self.args[2])..' >> 32)) << 16)'
+	end},
+	{'idiv','\\',function(self)
+		return "("..wraps.to_number(self.args[1])..' // ('..wraps.to_number(self.args[2])..' >> 48))'
+	end},
+	{'mod','%',function(self)
+		return wraps.to_number(self.args[1])..' % ('..wraps.to_number(self.args[2])..' >> 32)) << 16'
+	end},
+	{'pow','^',function(self)
+		return exprs.to_number(wraps.from_number(self.args[1])..' ^ '..wraps.from_number(self.args[2]))
+	end},
+	{'concat','..',function(self)
+		return wraps.concat(self.args[1])..' .. '..wraps.concat(self.args[2])
+	end},
+	{'shl','<<',function(self)
+		return wraps.to_number(self.args[1])..' << ('..wraps.to_number(self.args[2])..' >> 48)'
+	end},
+	{'shr','>>',function(self)
+		return '('..wraps.to_number(self.args[1])..' // (1 << ('..wraps.to_number(self.args[2])..' >> 48)))'..exprs.trim..')'
+	end},
+	{'lshr','>>>',function(self)
+		return '('..wraps.to_number(self.args[1])..' >> ('..wraps.to_number(self.args[2])..' >> 48))'..exprs.trim..')'
+	end},
+	{'rotl','<<>', true},
+	{'rotr','>><',true},
+	{'band','&',true},
+	{'bor','|',true},
+	{'bxor','~',true},
+	{'lt','<',false},
+	{'le','<=',false},
+	{'gt','>',false},
+	{'ge','>=',false},
+	{'eq','==',false},
+	{'ne','~=',false},
+	{'and','and',false},
+	{'or','or',false}
 } do
 	local name = info[1]
 	local op = info[2]
@@ -636,15 +730,29 @@ for _,info in ipairs{
 	function cl:init(...)
 		self.args = {...}
 	end
-	function cl.tostringmethods:lua()
-		return table.mapi(self.args, tostring):concat(' '..self.op..' ') -- spaces required for 'and' and 'or'
+	if info[3] == true then
+		function cl.tostringmethods:lua()
+			return '__p8tron_'..name..'('..table.mapi(self.args, tostring):concat(',')..')'
+		end
+	elseif info[3] then
+		cl.tostringmethods.lua = info[3]
+	else
+		function cl.tostringmethods:lua()
+			return table.mapi(self.args, tostring):concat(' '..op..' ') -- spaces required for 'and' and 'or'
+		end
 	end
 end
 
 for _,info in ipairs{
-	{'unm','-'},
-	{'not','not'},
-	{'len','#'},
+	{'unm','-',false},
+	{'not','not',false},
+	{'len','#',true},
+	{'bnot','~',function(self)
+		return '((~'..wraps.to_number(self.arg)..')'..exprs.trim..')'
+	end},
+	{'peek','@',true},
+	{'peek2','%',true},
+	{'peek4','$',true}
 } do
 	local name = info[1]
 	local op = info[2]
@@ -653,8 +761,16 @@ for _,info in ipairs{
 	function cl:init(arg)
 		self.arg = arg
 	end
-	function cl.tostringmethods:lua()
-		return ' '..self.op..' '..tostring(self.arg)	-- spaces required for 'not'
+	if info[3] == true then
+		function cl.tostringmethods:lua()
+			return '__p8tron_'..name..'('..table.mapi(self.arg, tostring):concat(',')..')'
+		end
+	elseif info[3] then
+		cl.tostringmethods.lua = info[3]
+	else
+		function cl.tostringmethods:lua()
+			return ' '..op..' '..tostring(self.arg)	-- spaces required for 'not'
+		end
 	end
 end
 
@@ -675,29 +791,29 @@ f = _function(
 			)
 		)
 	}
-	
+
 	-- becomes --
-	
+
 	"function vec3.add(a,b)
 		return vec3(
 			a[1] + b[1],
 			a[2] + b[2],
 			a[3] + b[3])
 	end"
-	
+
 	-- convert + to -
 	traverseRecurse(f, function(n)
 		if ast._add:isa(n) then n.type = 'sub' end
 	end
-	
+
 	-- then we do a tree-descent with replace rule:
 	traverseRecurse(f, function(n)
 		if ast._param:isa(n) and n.param == 2 then
 			n.param = 1
-		end			
+		end
 	end)
 	-- and that's how dot() becomes lenSq()
-	
+
 	-- inline a function
 	traverseRecurse(f, function(n)
 		if ast._call:isa(n) then
@@ -719,14 +835,14 @@ f = _function(
 			return inline
 		end
 	end)
-	
+
 	--[=[
 	make a list ... check it twice ...
-	
+
 	block		- statement block
 		[1]...[n] - array of stmt objects
 		.tostring = table.concat(block, ' ')
-	
+
 statements:
 	assign		- assignment operation
 		.vars	- array of var objects
@@ -736,18 +852,18 @@ statements:
 	do			- do / end block wrapper
 		[1]...[n] - array of stmt objects
 		.tostring = 'do '..table.concat(do, ' ')..' end'
-		
+
 	while
 		.cond	- condition expression
 		[1]...[n] - statements to execute
 		.tostring = 'while '..cond..' do '..table.concat(tostring, ' ')..' end'
-		
+
 	repeat
 		.cond	- condition expression
 		[1]...[n] - statements to execute
 		.tostring = 'repeat '..table.concat(tostring, ' ')..' until '..cond
-	
-	-- this could be prettier if we just had 'else' as a var, and did a special-case reinterpret for else->if's 
+
+	-- this could be prettier if we just had 'else' as a var, and did a special-case reinterpret for else->if's
 	-- but it would also have more nodes...
 	if
 		.cond		- condition expression
@@ -761,39 +877,39 @@ statements:
 						map(elseifs or {}, function(ei) return " elseif "..ei.cond.." then "..table.concat(stmts, " ") end),
 						' ')..
 					map(else or {}, function(else) return " else "..table.concat(else, ' ') end)
-	
+
 	-- for =
 	-- for in
 	-- local function
-	-- local 
-		
+	-- local
+
 last-statements:
 	return		- returns a list of expressions
 		.exprs
 		.tostring = 'return '..table.concat(exprs, ',')
-	
+
 	break		- breaks out of the current loop
-	
-	
+
+
 	stmt	general parent class of all statements
-	
-	
+
+
 	block
 		[1]...[n]: array of stmt objects
 		-tostring: "do "..all statement's tostring().." end"
-	
+
 	func
 		-name - string of function name.  optional.
 		-args - array of strings of argument names
 		-body - block of the statements in the function body
-	
-		
-	
+
+
+
 	--]=]
-	
+
 	-- we can similarly insert debug.traceback EVERYWHERE something gets referenced
 	so that I CAN GET STACK TRACES FROM ERRORS IN COROUTINES
-				
+
 
 then we could do tree traversing and graph inferencing
 and do some real inline optimization
